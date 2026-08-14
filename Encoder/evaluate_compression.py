@@ -78,6 +78,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
@@ -194,26 +195,49 @@ def compute_vmaf(ref_path: Path, dist_path: Path, model_path: Optional[str], wor
     if not vmaf_available():
         return None
 
-    log_path = work_dir / f"vmaf_{dist_path.stem}.json"
+    import re, tempfile, shutil
+
+    # ffmpeg's filter option parser can't handle Windows paths (backslashes
+    # are escape chars, colons are option separators). Write the JSON log to
+    # a temp file first, then copy it to the vmaf_logs subfolder.
+    # We run ffmpeg with cwd=tempdir and use just the filename to avoid
+    # any path separator or colon issues.
+    tmp_fd, tmp_log = tempfile.mkstemp(suffix=".json", prefix="vmaf_")
+    os.close(tmp_fd)
+    tmp_log_path = Path(tmp_log)
+    tmp_dir = str(tmp_log_path.parent)
+    log_filename = tmp_log_path.name
+
     model_opt = f":model_path={model_path}" if model_path else ""
     filt = (
         f"[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];"
-        f"[dist][ref]libvmaf=log_fmt=json:log_path={log_path}{model_opt}"
+        f"[dist][ref]libvmaf=log_fmt=json:log_path={log_filename}{model_opt}"
     )
     cmd = ["ffmpeg", "-y", "-i", str(dist_path), "-i", str(ref_path),
            "-lavfi", filt, "-f", "null", "-"]
-    out = subprocess.run(cmd, capture_output=True, text=True)
-    if out.returncode != 0 or not log_path.exists():
+    out = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp_dir)
+    if out.returncode != 0:
         log.warning(f"VMAF computation failed for {dist_path.name}: {out.stderr[-500:]}")
+        tmp_log_path.unlink(missing_ok=True)
         return None
 
-    with open(log_path) as f:
-        vmaf_log = json.load(f)
-    try:
-        return float(vmaf_log["pooled_metrics"]["vmaf"]["mean"])
-    except (KeyError, TypeError):
-        log.warning(f"Could not parse VMAF output for {dist_path.name}")
-        return None
+    # Save the JSON log to vmaf_logs/ subfolder (best-effort).
+    vmaf_logs_dir = work_dir / "vmaf_logs"
+    vmaf_logs_dir.mkdir(parents=True, exist_ok=True)
+    final_log_path = vmaf_logs_dir / f"vmaf_{dist_path.stem}.json"
+    if tmp_log_path.exists() and tmp_log_path.stat().st_size > 0:
+        shutil.copy2(str(tmp_log_path), str(final_log_path))
+        log.info(f"  VMAF log saved to {final_log_path}")
+    tmp_log_path.unlink(missing_ok=True)
+
+    # Parse the VMAF score directly from ffmpeg's stderr output.
+    # ffmpeg always prints: [Parsed_libvmaf_N @ 0xADDR] VMAF score: XX.XXXXXX
+    match = re.search(r"VMAF score:\s*([\d.]+)", out.stderr)
+    if match:
+        return float(match.group(1))
+
+    log.warning(f"Could not parse VMAF score from ffmpeg output for {dist_path.name}")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -367,8 +391,11 @@ class VariantResult:
 
 def evaluate_variant(clip_name: str, ref_path: Path, variant: dict,
                       roi_source: RoiSource, roi_percentile: float,
-                      vmaf_model_path: Optional[str], work_dir: Path) -> VariantResult:
+                      vmaf_model_path: Optional[str], work_dir: Path,
+                      manifest_dir: Optional[Path] = None) -> VariantResult:
     dist_path = Path(variant["path"])
+    if not dist_path.is_absolute() and manifest_dir is not None:
+        dist_path = (manifest_dir / dist_path).resolve()
     method = variant["method"]
     label = variant.get("label", dist_path.stem)
 
@@ -685,10 +712,18 @@ def write_markdown_report(results: list, summary_rows: list, out_path: Path,
 # Main
 # --------------------------------------------------------------------------- #
 
+def _default_manifest() -> Path:
+    """Look for ablation_out/manifest.json next to this script."""
+    return Path(__file__).resolve().parent / "ablation_out" / "manifest.json"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--manifest", type=Path, help="Path to manifest.json (see schema in module docstring).")
-    parser.add_argument("--out_dir", type=Path, default=Path("eval_results"), help="Output directory.")
+    parser.add_argument("--manifest", type=Path, default=_default_manifest(),
+                        help="Path to manifest.json. Default: ablation_out/manifest.json next to this script.")
+    default_out_dir = Path(__file__).resolve().parent / "ablation_out" / "eval_results"
+    parser.add_argument("--out_dir", type=Path, default=default_out_dir,
+                        help="Output directory. Default: ablation_out/eval_results next to this script.")
     parser.add_argument("--print_example", action="store_true", help="Print an example manifest.json and exit.")
     args = parser.parse_args()
 
@@ -697,7 +732,10 @@ def main():
         return
 
     if not args.manifest:
-        parser.error("--manifest is required (or use --print_example).")
+        parser.error(
+            f"No --manifest provided and default not found at {args.manifest}.\n"
+            f"Either pass --manifest path/to/manifest.json or run run_ablation_sweep.py first."
+        )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     attach_logfile(args.out_dir)
@@ -706,6 +744,7 @@ def main():
     log.addHandler(console)
 
     log.info(f"Loading manifest: {args.manifest}")
+    manifest_dir = args.manifest.resolve().parent
     with open(args.manifest) as f:
         manifest = json.load(f)
 
@@ -717,6 +756,8 @@ def main():
     for clip in manifest["clips"]:
         clip_name = clip["name"]
         ref_path = Path(clip["reference"])
+        if not ref_path.is_absolute():
+            ref_path = (manifest_dir / ref_path).resolve()
         log.info(f"\n=== Clip: {clip_name} ===")
 
         if not ref_path.exists():
@@ -724,16 +765,26 @@ def main():
             continue
 
         try:
-            roi_source = load_roi_source(Path(clip["roi_source"]))
+            roi_src_path = Path(clip["roi_source"])
+            if not roi_src_path.is_absolute():
+                roi_src_path = (manifest_dir / roi_src_path).resolve()
+            roi_source = load_roi_source(roi_src_path)
         except FileNotFoundError as e:
             log.error(str(e) + f" Skipping clip '{clip_name}'.")
             continue
 
         for variant in clip["variants"]:
             qp_dir_override = variant.get("qp_dir")
-            active_roi_source = load_roi_source(Path(qp_dir_override)) if qp_dir_override else roi_source
+            if qp_dir_override:
+                qp_override_path = Path(qp_dir_override)
+                if not qp_override_path.is_absolute():
+                    qp_override_path = (manifest_dir / qp_override_path).resolve()
+                active_roi_source = load_roi_source(qp_override_path)
+            else:
+                active_roi_source = roi_source
             res = evaluate_variant(clip_name, ref_path, variant, active_roi_source,
-                                    roi_percentile, vmaf_model_path, args.out_dir)
+                                    roi_percentile, vmaf_model_path, args.out_dir,
+                                    manifest_dir=manifest_dir)
             all_results.append(res)
 
     if not all_results:

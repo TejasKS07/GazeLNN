@@ -8,15 +8,13 @@ __pycache__/
 .vscode/
 *.pyc
 
-# Pipeline output data
-output_roi_mb.mp4
-*.mp4
-
 # MIT LowRes Dataset for evaluation
 mit_lowres_highres_only/
 
 # Diem Dataset
 DIEM/DIEM_Processed/
 DIEM/DIEM_ROOT/
-DIEM/DIEM_ROOT.zip
 
+# Encoder/ Ablation studies
+Encoder/empty_qp_dir/
+Encoder/qp_dir/

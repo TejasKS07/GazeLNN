@@ -13,13 +13,14 @@ falls back to all-zero QP offsets when it can't find a frame's .bin file
 same binary/CRF/preset as the gaze-guided run, just without per-MB offsets.
 No changes to encoder.c needed.
 
-Output layout (under Encoder/ablation_out/):
-    ablation_out/
+Output layout (under Encoder/):
+    Encoder/
       qp_dir/                      # one saliency map, reused across CRFs
       empty_qp_dir/                # empty on purpose -> forces zero offsets
-      uniform_crf20.mp4 ... crf29.mp4
-      gaze_crf20.mp4 ... crf29.mp4
-      manifest.json                # ready to feed straight into evaluate_compression.py
+      ablation_out/
+        uniform_crf20.mp4 ... crf29.mp4
+        gaze_crf20.mp4 ... crf29.mp4
+        manifest.json              # ready to feed straight into evaluate_compression.py
 
 Edit CRF_SWEEP / INPUT_VIDEO / QP params below as needed, then run:
     python run_ablation_sweep.py
@@ -38,7 +39,7 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 
 WORK_DIR = Path(__file__).resolve().parent
-INPUT_VIDEO = WORK_DIR / "videos" / "Sample_Video.mp4"   # <- point this at your test clip
+INPUT_VIDEO = WORK_DIR / "Sample_Video.mp4"   # <- point this at your test clip
 print(repr(WORK_DIR))
 print(repr(INPUT_VIDEO))
 print("exists?", INPUT_VIDEO.exists())
@@ -76,8 +77,8 @@ def main():
     env["PATH"] = "C:\\msys64\\mingw64\\bin;" + env.get("PATH", "")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    qp_dir = OUT_DIR / "qp_dir"
-    empty_qp_dir = OUT_DIR / "empty_qp_dir"
+    qp_dir = WORK_DIR / "qp_dir"
+    empty_qp_dir = WORK_DIR / "empty_qp_dir"
     empty_qp_dir.mkdir(parents=True, exist_ok=True)
     # keep it empty every run, in case a previous run left files in it
     for f in empty_qp_dir.iterdir():
@@ -142,7 +143,7 @@ def main():
         manifest_variants.append({
             "method": "gaze", "label": label,
             "path": str(gaze_out.relative_to(OUT_DIR)),
-            "qp_dir": str(qp_dir.relative_to(OUT_DIR)),
+            "qp_dir": os.path.relpath(qp_dir, OUT_DIR),
             "encode_time_s": round(gaze_time, 2),
         })
 
@@ -153,7 +154,7 @@ def main():
             "name": INPUT_VIDEO.stem,
             "reference": str(INPUT_VIDEO.relative_to(OUT_DIR)) if INPUT_VIDEO.is_relative_to(OUT_DIR)
                          else os.path.relpath(INPUT_VIDEO, OUT_DIR),
-            "roi_source": str(qp_dir.relative_to(OUT_DIR)),
+            "roi_source": os.path.relpath(qp_dir, OUT_DIR),
             "variants": manifest_variants,
         }],
     }

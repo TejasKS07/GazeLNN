@@ -1,0 +1,64 @@
+{
+  "roi_percentile": 25,
+  "clips": [
+    {
+      "name": "Sample_Video",
+      "reference": "..\\Sample_Video.mp4",
+      "roi_source": "..\\qp_dir",
+      "variants": [
+        {
+          "method": "uniform",
+          "label": "crf20",
+          "path": "uniform_crf20.mp4",
+          "encode_time_s": 9.31
+        },
+        {
+          "method": "gaze",
+          "label": "crf20",
+          "path": "gaze_crf20.mp4",
+          "qp_dir": "..\\qp_dir",
+          "encode_time_s": 8.66
+        },
+        {
+          "method": "uniform",
+          "label": "crf23",
+          "path": "uniform_crf23.mp4",
+          "encode_time_s": 8.43
+        },
+        {
+          "method": "gaze",
+          "label": "crf23",
+          "path": "gaze_crf23.mp4",
+          "qp_dir": "..\\qp_dir",
+          "encode_time_s": 8.3
+        },
+        {
+          "method": "uniform",
+          "label": "crf26",
+          "path": "uniform_crf26.mp4",
+          "encode_time_s": 7.94
+        },
+        {
+          "method": "gaze",
+          "label": "crf26",
+          "path": "gaze_crf26.mp4",
+          "qp_dir": "..\\qp_dir",
+          "encode_time_s": 7.39
+        },
+        {
+          "method": "uniform",
+          "label": "crf29",
+          "path": "uniform_crf29.mp4",
+          "encode_time_s": 7.31
+        },
+        {
+          "method": "gaze",
+          "label": "crf29",
+          "path": "gaze_crf29.mp4",
+          "qp_dir": "..\\qp_dir",
+          "encode_time_s": 7.24
+        }
+      ]
+    }
+  ]
+}
