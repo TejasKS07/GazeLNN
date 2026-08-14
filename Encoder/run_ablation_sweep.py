@@ -7,7 +7,7 @@ at CRF 26, this compiles the encoder once, then produces BOTH a uniform and
 a gaze-guided encode at each CRF in CRF_SWEEP, and writes them out in the
 layout evaluate_compression.py's manifest.json expects.
 
-Uniform baseline = encoder.exe pointed at an EMPTY directory. encoder.c
+Uniform baseline = encoder.exe pointed at an EMPTY diasrectory. encoder.c
 falls back to all-zero QP offsets when it can't find a frame's .bin file
 (see the fopen()/fread() fallback around line ~330), so this is the exact
 same binary/CRF/preset as the gaze-guided run, just without per-MB offsets.
