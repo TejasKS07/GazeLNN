@@ -8,8 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torchvision import transforms
 import cv2
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR / "DIEM"))
+
+from DIEM_Modeldata import GazeLLNArch
 
 def mb_grid(native_width = 1920, native_height = 1080):
     """
@@ -26,33 +32,94 @@ def mb_grid(native_width = 1920, native_height = 1080):
 
     return num_mb_width, num_mb_height
 
-def call_model(frame: np.ndarray) -> torch.Tensor:
+# Global Model and Recurrent State Cache
+
+_MODEL_CACHE = {
+    "model" : None,
+    "device" : None,
+    "prev_hmap": None,
+    "hx": None,
+    "transform": transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((256, 384)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+}
+
+def _init_center_gaussian(batch_size=1, hmap_h=32, hmap_w=48, sigma=1.5):
+    hmap = np.zeros((hmap_h, hmap_w), dtype=np.float32)
+    hmap[hmap_h // 2, hmap_w // 2] = 1.0
+    hmap = gaussian_filter(hmap, sigma=sigma)
+    hmap /= hmap.sum()
+    hmap_t = torch.from_numpy(hmap).unsqueeze(0).unsqueeze(0)
+    return hmap_t.expand(batch_size, 1, -1, -1).clone()
+
+
+
+def call_model(frame: np.ndarray, checkpoint_path: str = None, dt: float = 1) -> torch.Tensor:
     """
-    Placeholder function for calling the model.
-    Replace the implementation inside this function with actual model call.
-    
+    Passes a video frame [H, W, C] (OpenCV BGR) through GazeLLNArch and returns the saliency heatmap.
+
     Args:
         frame: 3D numpy array [H, W, C] representing the raw video frame (BGR order from OpenCV).
+        dt: The time delta between the current frame and the previous frame. 
         
     Returns:
-        hmap: 3D torch.Tensor [1, mb_height, mb_width] representing the saliency map.
+        hmap: 3D torch.Tensor [1, mb_height: 32, mb_width: 48] representing the saliency map.
     """
+    global _MODEL_CACHE
 
-    # Need to downscale the frame before passing it to the model
-    # TODO: Load model and run inference here.
-    # Example: model = LoadMyModel()
-    #          hmap = model(frame)
-    
-    # Placeholder implementation: simple left-to-right gradient
-    h, w, c = frame.shape
-    mb_width = (w + 15) // 16
-    mb_height = (h + 15) // 16
-    
-    cols = torch.linspace(0.0, 1.0, steps=mb_width, dtype=torch.float32)            # Test
-    hmap = torch.tile(cols, (mb_height, 1))                                         # Test
+    if _MODEL_CACHE["model"] is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _MODEL_CACHE["device"] = device
+        
+        model = GazeLLNArch().to(device)
+        
+        # Determine path to DIEM_model.pt
 
-    # Add batch dimension to return (B, mb_height, mb_width) where B=1
-    return hmap.unsqueeze(0)
+        if checkpoint_path is None:
+            ckpt_file = ROOT_DIR / "DIEM_model.pt"
+        else:
+            ckpt_file = Path(checkpoint_path)
+
+        # Load state_dict weights
+        if ckpt_file.exists():
+            print(f"Loading model weights from {ckpt_file}")
+            state_dict = torch.load(ckpt_file, map_location=device)
+            model.load_state_dict(state_dict)
+        else:
+            print(f"Warning: {ckpt_file} not found. Running with un-trained weights.")
+            
+        model.eval()
+        _MODEL_CACHE["model"] = model
+        _MODEL_CACHE["prev_hmap"] = _init_center_gaussian().to(device)
+        _MODEL_CACHE["hx"] = None
+
+    model = _MODEL_CACHE["model"]
+    device = _MODEL_CACHE["device"]
+
+    # Frame Preprocessing
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img_tensor = _MODEL_CACHE["transform"](rgb_frame).unsqueeze(0).to(device)
+
+    # Model Inference
+
+    with torch.no_grad():
+        ts = torch.tensor([dt], device = device)
+
+        # DIEM arch separates feature extraction from the recurrent forward pass.
+        # extract_features() returns (B, 960) visual features from MobileNet.
+        vis_features = model.extract_features(img_tensor)
+
+        out_hmap, hx = model(vis_features, _MODEL_CACHE["prev_hmap"], _MODEL_CACHE["hx"], ts)
+        # Update recurrent state cache for next frame
+        _MODEL_CACHE["prev_hmap"] = out_hmap
+        _MODEL_CACHE["hx"] = hx
+
+        return out_hmap.squeeze(1).cpu()
+
 
 def apply_spatial_smoothing(hmap: torch.Tensor, sigma = 0.0) -> torch.Tensor:
     # Apply Gaussian spatial smoothing. sigma=0 means no smoothing

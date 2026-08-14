@@ -79,9 +79,9 @@ def main():
         "qp_map_generator.py",
         "--video_path", str(input_video),
         "--output_dir", str(qp_dir),
-        "--qp_min", "-6.0",
-        "--qp_max", "6.0",
-        "--spatial_sigma", "0.0",
+        "--qp_min", "-3.0",
+        "--qp_max", "10.0",
+        "--spatial_sigma", "1.5",
         "--temporal_alpha", "1.0"
     ]
     run_cmd(qpoffset_cmd, env=env)
@@ -94,7 +94,7 @@ def main():
         str(input_video),
         str(output_video),
         str(qp_dir),
-        "--crf", "20",
+        "--crf", "26",
         "--preset", "medium"
     ]
     run_cmd(encoder_cmd, env=env)
