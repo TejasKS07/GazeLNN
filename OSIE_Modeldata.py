@@ -787,9 +787,9 @@ class GazeLLNArch(pl.LightningModule):
         if prev_hmap.dim() == 3:
             prev_hmap = prev_hmap.unsqueeze(1)
             
-    
-        # hmap_coords = self.coordconv(prev_hmap).flatten(1)
-        hmap_coords = prev_hmap.flatten(1) # Shape: (B, hmap_h * hmap_w) (using coordconv before flattenning might be useless)
+        # Shape of hmap_coords: (B, hmap_h * hmap_w) 
+        hmap_coords = self.coordconv(prev_hmap).flatten(1)          
+        # hmap_coords = prev_hmap.flatten(1)                        (using coordconv before flattenning might be useless)
         
         # Ensure ts has shape (B, 1) instead of just (B,)
         if ts.dim() == 1:
