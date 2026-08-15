@@ -123,11 +123,11 @@ def plot_bdrate(
     rate_g: np.ndarray, qual_g: np.ndarray,
     out_dir: Path,
 ):
-    # --- Fit both curves ---
+    # Fit both curves
     poly_u = fit_lograte_vs_quality(rate_u, qual_u)
     poly_g = fit_lograte_vs_quality(rate_g, qual_g)
 
-    # --- Overlapping quality range ---
+    # Overlapping quality range
     lo = max(qual_u.min(), qual_g.min())
     hi = min(qual_u.max(), qual_g.max())
     if hi <= lo:
@@ -136,10 +136,10 @@ def plot_bdrate(
               file=sys.stderr)
         return
 
-    # --- BD-rate ---
+    # BD-rate
     bdrate_pct, bdrate_note = compute_bdrate(rate_u, qual_u, rate_g, qual_g)
 
-    # --- Dense quality arrays for smooth curves ---
+    # Dense quality arrays for smooth curves
     q_dense_u = np.linspace(qual_u.min(), qual_u.max(), 300)
     q_dense_g = np.linspace(qual_g.min(), qual_g.max(), 300)
     r_dense_u = np.exp(poly_u(q_dense_u))
@@ -150,7 +150,7 @@ def plot_bdrate(
     r_shade_u = np.exp(poly_u(q_shade))
     r_shade_g = np.exp(poly_g(q_shade))
 
-    # --- Plot ---
+    # Plot
     fig, ax = plt.subplots(figsize=(8, 5.5))
 
     # Fitted curves (full range of each method)
@@ -211,16 +211,13 @@ def plot_bdrate(
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     fig.tight_layout()
 
-    # --- Save ---
+    # Save
     stem = f"bdrate_{clip_name}"
     png_path = out_dir / f"{stem}.png"
-    pdf_path = out_dir / f"{stem}.pdf"
     fig.savefig(png_path, dpi=200)
-    fig.savefig(pdf_path)
     plt.close(fig)
     print(f"Saved: {png_path}")
-    print(f"Saved: {pdf_path}")
-
+    
 def default_csv() -> Path:
     return Path(__file__).resolve().parent / "ablation_out" / "eval_results" / "results_detailed.csv"
 # CLI
