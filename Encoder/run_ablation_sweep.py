@@ -44,7 +44,7 @@ print(repr(WORK_DIR))
 print(repr(INPUT_VIDEO))
 print("exists?", INPUT_VIDEO.exists())
 OUT_DIR = WORK_DIR / "ablation_out"
-CRF_SWEEP = [20, 23, 26, 29]                          # >=4 points recommended for BD-Rate
+CRF_SWEEP = [18, 21, 24, 27, 30, 33]   # >=4 points recommended for BD-Rate
 PRESET = "medium"
 
 # qp_map_generator.py settings (same for every CRF -- one saliency pass is
@@ -85,7 +85,7 @@ def main():
         f.unlink()
 
     # 1. Compile the encoder once
-    print("=== Compiling encoder.c ===")
+    print("Compiling encoder.c:")
     gcc_cmd = [
         "C:\\msys64\\mingw64\\bin\\gcc.exe", "-O3", "-Wall",
         str(WORK_DIR / "encoder.c"), "-o", str(WORK_DIR / "encoder.exe"),
@@ -95,9 +95,8 @@ def main():
     encoder_exe = WORK_DIR / "encoder.exe"
 
     # 2. Generate the saliency-driven QP offset maps ONCE for this clip.
-    #    Reused for every CRF in the sweep -- the model's output doesn't
-    #    depend on the encoder's CRF.
-    print("\n=== Generating QP offset maps (qp_map_generator.py) ===")
+    # Reused for every CRF in the sweep -- the model's output doesn't depend on the encoder's CRF.
+    print("\nGenerating QP offset maps (qp_map_generator.py):")
     if qp_dir.exists():
         shutil.rmtree(qp_dir)
     qp_dir.mkdir(parents=True)
@@ -116,9 +115,9 @@ def main():
     for crf in CRF_SWEEP:
         label = f"crf{crf}"
 
-        # --- uniform: same encoder/CRF/preset, empty qp dir -> zero offsets
+        # uniform: same encoder/CRF/preset, empty qp dir -> zero offsets
         uniform_out = OUT_DIR / f"uniform_{label}.mp4"
-        print(f"\n=== Encoding UNIFORM crf={crf} ===")
+        print(f"\nEncoding UNIFORM crf={crf}:")
         t0 = time.time()
         run_cmd([
             str(encoder_exe), str(INPUT_VIDEO), str(uniform_out), str(empty_qp_dir),
@@ -131,9 +130,9 @@ def main():
             "encode_time_s": round(uniform_time, 2),
         })
 
-        # --- gaze-guided: same encoder/CRF/preset, real qp dir
+        # gaze-guided: same encoder/CRF/preset, real qp dir
         gaze_out = OUT_DIR / f"gaze_{label}.mp4"
-        print(f"\n=== Encoding GAZE-GUIDED crf={crf} ===")
+        print(f"\nEncoding GAZE-GUIDED crf={crf}:")
         t0 = time.time()
         run_cmd([
             str(encoder_exe), str(INPUT_VIDEO), str(gaze_out), str(qp_dir),
@@ -147,7 +146,7 @@ def main():
             "encode_time_s": round(gaze_time, 2),
         })
 
-    # 4. Write a manifest.json ready for evaluate_compression.py
+    # 4. Write a manifest.json for evaluate_compression.py
     manifest = {
         "roi_percentile": 25,
         "clips": [{

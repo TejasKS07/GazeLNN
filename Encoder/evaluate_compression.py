@@ -191,9 +191,17 @@ def vmaf_available() -> bool:
     return _VMAF_AVAILABLE
 
 
-def compute_vmaf(ref_path: Path, dist_path: Path, model_path: Optional[str], work_dir: Path) -> Optional[float]:
+def compute_vmaf(ref_path: Path, dist_path: Path, model_path: Optional[str], work_dir: Path) -> tuple:
+    """Compute VMAF for a distorted video against a reference.
+
+    Returns
+    -------
+    (global_vmaf, per_frame_scores) : tuple[Optional[float], list[float]]
+        global_vmaf  -- mean VMAF over all frames (None if unavailable).
+        per_frame_scores -- list of per-frame VMAF values (empty if unavailable).
+    """
     if not vmaf_available():
-        return None
+        return None, []
 
     import re, tempfile, shutil
 
@@ -219,7 +227,7 @@ def compute_vmaf(ref_path: Path, dist_path: Path, model_path: Optional[str], wor
     if out.returncode != 0:
         log.warning(f"VMAF computation failed for {dist_path.name}: {out.stderr[-500:]}")
         tmp_log_path.unlink(missing_ok=True)
-        return None
+        return None, []
 
     # Save the JSON log to vmaf_logs/ subfolder (best-effort).
     vmaf_logs_dir = work_dir / "vmaf_logs"
@@ -230,14 +238,55 @@ def compute_vmaf(ref_path: Path, dist_path: Path, model_path: Optional[str], wor
         log.info(f"  VMAF log saved to {final_log_path}")
     tmp_log_path.unlink(missing_ok=True)
 
-    # Parse the VMAF score directly from ffmpeg's stderr output.
+    # --- Parse per-frame VMAF scores from the JSON log ---
+    per_frame_scores = []
+    if final_log_path.exists():
+        try:
+            with open(final_log_path) as jf:
+                vmaf_json = json.load(jf)
+            for frame in vmaf_json.get("frames", []):
+                metrics = frame.get("metrics", {})
+                score = metrics.get("vmaf")
+                if score is not None:
+                    per_frame_scores.append(float(score))
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            log.warning(f"Could not parse per-frame VMAF from {final_log_path}: {exc}")
+
+    # Parse the global VMAF score from ffmpeg's stderr output.
     # ffmpeg always prints: [Parsed_libvmaf_N @ 0xADDR] VMAF score: XX.XXXXXX
+    global_vmaf = None
     match = re.search(r"VMAF score:\s*([\d.]+)", out.stderr)
     if match:
-        return float(match.group(1))
+        global_vmaf = float(match.group(1))
+    elif per_frame_scores:
+        # Fallback: compute from per-frame scores if stderr parsing failed.
+        global_vmaf = float(np.mean(per_frame_scores))
+    else:
+        log.warning(f"Could not parse VMAF score from ffmpeg output for {dist_path.name}")
 
-    log.warning(f"Could not parse VMAF score from ffmpeg output for {dist_path.name}")
-    return None
+    return global_vmaf, per_frame_scores
+
+
+# --------------------------------------------------------------------------- #
+# ROI / periphery masks, derived from the saliency-driven QP offsets already
+# written by Encoder/qp_map_generator.py (metadata.json + qpoffset_NNNNNN.bin)
+# --------------------------------------------------------------------------- #
+
+def vmaf_windowed_averages(per_frame_scores: list, window: int = 20) -> list:
+    """Compute the average VMAF over non-overlapping windows of `window` frames.
+
+    Returns a list of (start_frame, end_frame, avg_vmaf) tuples.  The last
+    window may be shorter than `window` frames if the total frame count is
+    not evenly divisible.
+    """
+    if not per_frame_scores:
+        return []
+    avgs = []
+    scores = np.asarray(per_frame_scores, dtype=np.float64)
+    for start in range(0, len(scores), window):
+        end = min(start + window, len(scores))  # exclusive
+        avgs.append((start, end - 1, float(np.mean(scores[start:end]))))
+    return avgs
 
 
 # --------------------------------------------------------------------------- #
@@ -385,6 +434,7 @@ class VariantResult:
     ssim_roi: float = float("nan")
     ssim_periphery: float = float("nan")
     vmaf_global: Optional[float] = None
+    vmaf_per_20f: list = field(default_factory=list)  # [(start, end, avg), ...]
     encode_time_s: Optional[float] = None
     notes: str = ""
 
@@ -473,9 +523,15 @@ def evaluate_variant(clip_name: str, ref_path: Path, variant: dict,
     res.ssim_roi = float(np.nanmean(ssim_r))
     res.ssim_periphery = float(np.nanmean(ssim_p))
 
-    res.vmaf_global = compute_vmaf(ref_path, dist_path, vmaf_model_path, work_dir)
+    vmaf_score, vmaf_per_frame = compute_vmaf(ref_path, dist_path, vmaf_model_path, work_dir)
+    res.vmaf_global = vmaf_score
+    res.vmaf_per_20f = vmaf_windowed_averages(vmaf_per_frame, window=20)
 
     res.notes = "; ".join(notes)
+    if res.vmaf_per_20f:
+        n_windows = len(res.vmaf_per_20f)
+        log.info(f"  VMAF per-20-frame windows ({n_windows} windows): "
+                 + ", ".join(f"f{s}-{e}: {a:.2f}" for s, e, a in res.vmaf_per_20f))
     log.info(
         f"[{clip_name}/{method}/{label}] {res.frames_evaluated} frames | "
         f"{res.bitrate_kbps:.1f} kbps | PSNR(g/roi/per)="
@@ -567,12 +623,34 @@ DETAILED_FIELDS = [
 ]
 
 
+def _vmaf_window_columns(results: list) -> list:
+    """Determine the dynamic vmaf_avg_fN_M column names needed to cover
+    the longest vmaf_per_20f list across all results."""
+    max_windows = max((len(r.vmaf_per_20f) for r in results), default=0)
+    cols = []
+    for i in range(max_windows):
+        start = i * 20
+        end = start + 19
+        cols.append(f"vmaf_avg_f{start}_{end}")
+    return cols
+
+
 def write_detailed_csv(results: list, out_path: Path):
+    vmaf_cols = _vmaf_window_columns(results)
+    all_fields = DETAILED_FIELDS + vmaf_cols
     with open(out_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=DETAILED_FIELDS)
+        w = csv.DictWriter(f, fieldnames=all_fields)
         w.writeheader()
         for r in results:
-            w.writerow({k: getattr(r, k) for k in DETAILED_FIELDS})
+            row = {k: getattr(r, k) for k in DETAILED_FIELDS}
+            # Fill in the per-20-frame VMAF average columns.
+            for idx, col in enumerate(vmaf_cols):
+                if idx < len(r.vmaf_per_20f):
+                    _, _, avg = r.vmaf_per_20f[idx]
+                    row[col] = f"{avg:.4f}"
+                else:
+                    row[col] = ""
+            w.writerow(row)
 
 
 def compute_summary(results: list) -> list:
